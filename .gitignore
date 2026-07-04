@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+dist/
+
+# Local runtime files (machine-specific settings, logs)
+config.json
+timecodebridge.log
+
+# Third-party application present in this folder — not part of this project
+Timecode Expert.exe
+
+# IDE
+.vs/
+*.user
