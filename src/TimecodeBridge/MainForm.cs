@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Net;
 using System.Net.NetworkInformation;
@@ -61,6 +62,7 @@ public sealed class MainForm : Form
     readonly DarkCheck _chkWatchdog = new();
     readonly Button _btnLock = new();
     readonly Label _lblStatus = new();
+    readonly Label _lnkUpdate = new();
     readonly System.Windows.Forms.Timer _uiTimer = new();
     readonly System.Windows.Forms.Timer _restartTimer = new();
     readonly ToolTip _tips = new();
@@ -384,16 +386,26 @@ public sealed class MainForm : Form
         _btnLock.Click += (_, _) => SetLocked(!_config.Locked);
         Controls.Add(_btnLock);
 
-        _lblStatus.SetBounds(Margin_, 548, ContentW, 18);
+        _lblStatus.SetBounds(Margin_, 548, 300, 18);
         _lblStatus.TextAlign = ContentAlignment.MiddleLeft;
         _lblStatus.ForeColor = ForeFaint;
         _lblStatus.Font = new Font("Segoe UI", 8.5f);
         _lblStatus.Text = "Starting…";
 
+        _lnkUpdate.SetBounds(Margin_ + 300, 548, ContentW - 300, 18);
+        _lnkUpdate.TextAlign = ContentAlignment.MiddleRight;
+        _lnkUpdate.ForeColor = ForeFaint;
+        _lnkUpdate.Font = new Font("Segoe UI", 8.5f);
+        _lnkUpdate.Text = $"v{UpdateService.Format(UpdateService.CurrentVersion)} — check for updates";
+        _lnkUpdate.Cursor = Cursors.Hand;
+        _lnkUpdate.MouseEnter += (_, _) => { if (_lnkUpdate.ForeColor == ForeFaint) _lnkUpdate.ForeColor = ForeDim; };
+        _lnkUpdate.MouseLeave += (_, _) => { if (_lnkUpdate.ForeColor == ForeDim) _lnkUpdate.ForeColor = ForeFaint; };
+        _lnkUpdate.Click += Update_Click;
+
         Controls.AddRange(new Control[]
         {
             _lblTc, _lblRateInfo, _lblSignal, _lblLock, _lblTx, _lblPackets,
-            _levelBar, _btnRefresh, _lblStatus,
+            _levelBar, _btnRefresh, _lblStatus, _lnkUpdate,
         });
 
         SetTip(_numOffset, "Frames added before sending. +1 compensates for the one-frame LTC read delay.");
@@ -406,6 +418,60 @@ public sealed class MainForm : Form
         SetTip(_chkWatchdog, "A companion process relaunches the bridge within seconds if it ever crashes.");
         SetTip(_chkAlert, "Windows notification when timecode output stops or falls back to the generator.");
         SetTip(_btnLock, "Lock all settings so nothing can be changed mid-show.");
+        SetTip(_lnkUpdate, "Download the newest version from GitHub and restart. Disabled while settings are locked.");
+    }
+
+    bool _updateInstalled;
+    bool _updateBusy;
+
+    async void Update_Click(object? sender, EventArgs e)
+    {
+        if (_updateBusy) return;
+        if (_updateInstalled)
+        {
+            // Swap already happened on disk — start the new exe and bow out. The new
+            // instance waits for this pid so the single-instance mutex doesn't
+            // mistake it for a "show the window" launch.
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath!,
+                "--restarted " + Environment.ProcessId) { UseShellExecute = true });
+            _quitting = true;
+            Close();
+            return;
+        }
+
+        _updateBusy = true;
+        _lnkUpdate.Cursor = Cursors.Default;
+        _lnkUpdate.ForeColor = ForeDim;
+        _lnkUpdate.Text = "Checking…";
+        try
+        {
+            var info = await UpdateService.CheckAsync();
+            if (info is null)
+            {
+                _lnkUpdate.Text = $"v{UpdateService.Format(UpdateService.CurrentVersion)} — up to date";
+                _lnkUpdate.ForeColor = ForeFaint;
+            }
+            else
+            {
+                var ver = "v" + UpdateService.Format(info.Version);
+                _lnkUpdate.Text = $"Downloading {ver}…";
+                var progress = new Progress<double>(p =>
+                    _lnkUpdate.Text = $"Downloading {ver}… {p:P0}");
+                await UpdateService.DownloadAndInstallAsync(info, progress);
+                _updateInstalled = true;
+                _lnkUpdate.Text = $"{ver} installed — restart now";
+                _lnkUpdate.ForeColor = Green;
+                Logger.Log($"Update {ver} downloaded and installed; awaiting restart");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("Update failed: " + ex.Message);
+            _lnkUpdate.Text = "Update failed — click to retry";
+            _lnkUpdate.ForeColor = Red;
+        }
+        _updateBusy = false;
+        _lnkUpdate.Cursor = Cursors.Hand;
     }
 
     void StyleCheck(DarkCheck c, string text, int x, int y, int w)
@@ -425,7 +491,7 @@ public sealed class MainForm : Form
                      _cmbDriver, _cmbDevice, _numChannel, _btnRefresh, _cmbNic,
                      _txtTargetIpField, _numPort, _cmbRate, _numOffset, _numFreewheel,
                      _cmbNic2, _txtTargetIp2Field, _chkAlert, _chkSound, _chkGenerator,
-                     _chkStartup, _chkWatchdog,
+                     _chkStartup, _chkWatchdog, _lnkUpdate,
                  })
             c.Enabled = !locked;
         _btnLock.Text = locked ? "UNLOCK" : "LOCK SETTINGS";

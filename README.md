@@ -20,6 +20,11 @@ required on the target machine).
 Any setting change is applied automatically about half a second after you make it.
 Settings persist in `config.json` next to the exe.
 
+**Updating:** click **check for updates** at the bottom right of the window — the
+bridge downloads the newest release from GitHub, swaps the exe in place, and offers
+a one-click restart. (Disabled while settings are locked, so nothing can restart the
+app mid-show.)
+
 **Runs in the background:** closing the window minimises to the system tray — the
 tray dot shows live status (grey no signal · green locked · amber freewheel) and its
 tooltip shows the current timecode. Double-click the tray icon (or launch the exe

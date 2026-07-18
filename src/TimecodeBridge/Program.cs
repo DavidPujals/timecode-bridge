@@ -19,6 +19,15 @@ static class Program
             return;
         }
 
+        // Post-update restart: the old instance still holds the single-instance
+        // mutex for a moment — wait for it to exit or this launch would be treated
+        // as a "show the window" signal and quit.
+        if (args.Length >= 2 && args[0] == "--restarted" && int.TryParse(args[1], out int oldPid))
+        {
+            try { Process.GetProcessById(oldPid).WaitForExit(15000); }
+            catch (ArgumentException) { /* already gone */ }
+        }
+
         using var mutex = new Mutex(true, @"Local\TimecodeBridge_SingleInstance", out bool createdNew);
         if (!createdNew)
         {
@@ -42,6 +51,8 @@ static class Program
             Logger.Log("Second launch: running instance did not expose its show signal");
             return;
         }
+
+        UpdateService.CleanupLeftovers();
 
         // 1 ms system timer resolution — needed for accurate freewheel timing and
         // tight worker-thread wait granularity.
