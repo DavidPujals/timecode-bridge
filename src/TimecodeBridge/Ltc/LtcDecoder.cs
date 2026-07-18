@@ -44,6 +44,7 @@ public sealed class LtcDecoder
     double _avgSamplesPerFrame;
     bool _haveAvg;
     int _cadenceRejects;
+    double _prevSpan; // last plausible sync-to-sync span; 0 = no candidate yet
     // output confirmation chain
     LtcFrame _lastFrame;
     bool _haveLast;
@@ -118,6 +119,7 @@ public sealed class LtcDecoder
         _avgSamplesPerFrame = 0;
         _haveAvg = false;
         _cadenceRejects = 0;
+        _prevSpan = 0;
         _haveLast = false;
         _consecutive = 0;
         _locked = false;
@@ -156,7 +158,10 @@ public sealed class LtcDecoder
             env *= _envDecay;
             float ay = Math.Abs(y);
             if (ay > env) env = ay;
-            if (env < 1e-4f) env = 1e-4f;
+            // Floor ≈ -60 dBFS (threshold ≈ -70 dBFS). Any real LTC feed is far above
+            // this; below it lives digital-silence junk — dither, driver glitches on
+            // idle DVS/virtual inputs — which must never register as transitions.
+            if (env < 1e-3f) env = 1e-3f;
             float threshold = env * 0.3f;
 
             if (!high)
@@ -175,8 +180,10 @@ public sealed class LtcDecoder
         _high = high;
         if (chunkPeak > Volatile.Read(ref _peak)) Volatile.Write(ref _peak, chunkPeak);
 
-        // Drop lock if the stream has gone quiet for several frames.
-        if (_locked || _haveLast)
+        // Drop lock if the stream has gone quiet for several frames. The measured
+        // rate is forgotten too: a latched fps would otherwise let any later stray
+        // sync-looking blip light SIGNAL on an idle input (seen on silent DVS inputs).
+        if (_locked || _haveLast || _haveAvg)
         {
             double frameSpan = _haveAvg ? _avgSamplesPerFrame : _sampleRate / 24.0;
             if (_sampleCount - _lastSync > 4 * frameSpan)
@@ -187,6 +194,10 @@ public sealed class LtcDecoder
                 _pendingHalf = false;
                 _regLo = 0;
                 _regHi = 0;
+                _haveAvg = false;
+                _avgSamplesPerFrame = 0;
+                _cadenceRejects = 0;
+                _prevSpan = 0;
             }
         }
     }
@@ -261,9 +272,16 @@ public sealed class LtcDecoder
         {
             if (!_haveAvg)
             {
-                _avgSamplesPerFrame = span;
-                _haveAvg = true;
-                _cadenceRejects = 0;
+                // Trust a frame rate only after two CONSISTENT consecutive spans
+                // (i.e. three evenly spaced sync words). A coincidental pair of
+                // noise-made sync patterns must not establish a rate.
+                if (_prevSpan > 0 && Math.Abs(span - _prevSpan) < 0.1 * _prevSpan)
+                {
+                    _avgSamplesPerFrame = span;
+                    _haveAvg = true;
+                    _cadenceRejects = 0;
+                }
+                _prevSpan = span;
             }
             else if (Math.Abs(span - _avgSamplesPerFrame) < 0.1 * _avgSamplesPerFrame)
             {
@@ -277,6 +295,10 @@ public sealed class LtcDecoder
                 _cadenceRejects = 0;
                 _consecutive = 0;
             }
+        }
+        else
+        {
+            _prevSpan = 0; // a gap breaks the consistency chain
         }
 
         // Extract BCD fields from frame bits 0..63 (now sitting in _regLo).

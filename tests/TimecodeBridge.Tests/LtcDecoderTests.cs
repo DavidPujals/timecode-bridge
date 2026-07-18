@@ -154,6 +154,79 @@ public class LtcDecoderTests
     }
 
     [Fact]
+    public void Digital_silence_dither_never_reports_a_rate()
+    {
+        // ±1 LSB 16-bit dither — what an idle Dante Virtual Soundcard input looks
+        // like. The envelope floor must keep this below the transition threshold,
+        // so no sync, no rate, no frames — ever.
+        var rng = new Random(20260713);
+        const float lsb = 1f / 32768f;
+        var buf = new float[48000 * 60];
+        for (int i = 0; i < buf.Length; i++)
+            buf[i] = rng.NextDouble() < 0.5 ? lsb : -lsb;
+
+        var dec = new LtcDecoder(48000);
+        int signalPolls = 0;
+        var frames = new List<LtcFrame>();
+        dec.FrameDecoded = f => frames.Add(f);
+        for (int off = 0; off < buf.Length; off += 480)
+        {
+            dec.Process(buf.AsSpan(off, 480));
+            if (dec.SignalPresent && dec.MeasuredFps > 0) signalPolls++;
+        }
+        Assert.Empty(frames);
+        Assert.Equal(0, signalPolls);
+        Assert.Equal(0.0, dec.MeasuredFps);
+    }
+
+    [Fact]
+    public void Two_syncs_do_not_establish_a_rate_but_three_do()
+    {
+        // 3 generated frames flush only 2 sync words (the last frame's sync needs a
+        // following transition) — one span. A rate needs two consistent spans, so a
+        // coincidental pair of noise-made syncs can never seed MeasuredFps.
+        var dec2 = new LtcDecoder(48000);
+        dec2.Process(LtcGenerator.Generate(new LtcFrame(0, 0, 0, 0), 3, TimecodeRate.Ebu25, 25.0, 48000));
+        Assert.Equal(0.0, dec2.MeasuredFps);
+        Assert.False(dec2.Locked);
+
+        // One more frame = three syncs = two consistent spans: rate established.
+        var dec3 = new LtcDecoder(48000);
+        dec3.Process(LtcGenerator.Generate(new LtcFrame(0, 0, 0, 0), 4, TimecodeRate.Ebu25, 25.0, 48000));
+        Assert.InRange(dec3.MeasuredFps, 24.9, 25.1);
+    }
+
+    [Fact]
+    public void Stray_sync_after_silence_does_not_light_signal()
+    {
+        // The production incident: a brief blip latches a measured rate, the input
+        // goes silent, and a later lone stray sync pattern lights SIGNAL (and could
+        // even decode a bogus frame that the bridge would transmit as Art-Net).
+        var blip1 = LtcGenerator.Generate(new LtcFrame(0, 0, 0, 0), 3, TimecodeRate.Ebu25, 25.0, 48000);
+        var silence = new float[48000 * 30];
+        var blip2full = LtcGenerator.Generate(new LtcFrame(7, 7, 7, 7), 2, TimecodeRate.Ebu25, 25.0, 48000);
+        var blip2 = blip2full.AsSpan(0, (int)(1.2 * 1920)).ToArray(); // one frame + enough to flush its sync
+        var tail = new float[48000 * 2];
+        var all = blip1.Concat(silence).Concat(blip2).Concat(tail).ToArray();
+
+        var dec = new LtcDecoder(48000);
+        var frames = new List<LtcFrame>();
+        dec.FrameDecoded = f => frames.Add(f);
+        long afterMark = blip1.Length + 48000 * 25L; // well into the silence
+        int latePolls = 0;
+        for (int off = 0; off < all.Length; off += 480)
+        {
+            int n = Math.Min(480, all.Length - off);
+            dec.Process(all.AsSpan(off, n));
+            if (off + n > afterMark && dec.SignalPresent && dec.MeasuredFps > 0)
+                latePolls++;
+        }
+        Assert.Equal(0, latePolls);
+        Assert.Empty(frames);
+        Assert.False(dec.Locked);
+    }
+
+    [Fact]
     public void Measures_frame_rate_accurately()
     {
         var dec = new LtcDecoder(48000);

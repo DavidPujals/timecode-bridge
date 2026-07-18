@@ -86,7 +86,7 @@ the true frame boundary — well under half a frame even via WDM.
 ## Building from source
 
 ```powershell
-dotnet test TimecodeBridge.sln -c Release        # 48 tests: decoder, DF math, Art-Net, engine, soak/fuzz, features
+dotnet test TimecodeBridge.sln -c Release        # 52 tests: decoder, DF math, Art-Net, engine, soak/fuzz, features
 dotnet publish src\TimecodeBridge\TimecodeBridge.csproj -c Release -r win-x64 `
   --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist
 ```
