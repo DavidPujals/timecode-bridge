@@ -178,12 +178,16 @@ public sealed class MainForm : Form
         }
 
         Watchdog.SignalCleanExit(); // before anything else: this exit is intentional
+        ShuttingDown = true;
+        Logger.Log($"Quit requested ({e.CloseReason})");
+        StartShutdownFailsafe();
         _uiTimer.Stop();
         _restartTimer.Stop();
         _watcherStop.Set();
         _showWatcher?.Join(1000);
         _engine?.Dispose();
         _engine = null;
+        Logger.Log("Shutdown: engine stopped");
         SaveUiToConfig();
         _config.Save();
         _tray.Visible = false;
@@ -191,6 +195,25 @@ public sealed class MainForm : Form
         _showSignal.Dispose();
         _watcherStop.Dispose();
         base.OnFormClosing(e);
+    }
+
+    /// <summary>True once an intentional quit has begun (suppresses UI error dialogs).</summary>
+    public static volatile bool ShuttingDown;
+
+    // A quit must never hang the process: a driver call (ASIO especially) can block
+    // teardown indefinitely, and a zombie instance keeps holding the single-instance
+    // mutex — which blocks every later launch AND the in-app update restart. Healthy
+    // shutdown takes well under a second (the engine join caps at 5 s), so after 10 s
+    // something is stuck beyond saving — log it and pull the plug.
+    static void StartShutdownFailsafe()
+    {
+        new Thread(() =>
+        {
+            Thread.Sleep(10_000);
+            Logger.Log("Shutdown did not complete within 10 s — forcing process exit");
+            Environment.Exit(0);
+        })
+        { IsBackground = true, Name = "shutdown-failsafe" }.Start();
     }
 
     // ------------------------------------------------------------------ tray

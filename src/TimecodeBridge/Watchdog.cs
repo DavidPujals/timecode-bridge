@@ -10,7 +10,10 @@ namespace TimecodeBridge;
 /// </summary>
 public static class Watchdog
 {
-    const string CancelEventName = @"Local\TimecodeBridge_WatchdogCancel";
+    // Pid-scoped: a session-wide name would let any other copy of this exe (a test
+    // build, a second install) set or reset OUR cancel event — a stale "clean exit"
+    // signal would then mask a real crash and the watchdog would never relaunch.
+    static string CancelEventName(int pid) => $@"Local\TimecodeBridge_WatchdogCancel_{pid}";
 
     static EventWaitHandle? _cancel;
     static Process? _process;
@@ -20,7 +23,7 @@ public static class Watchdog
     {
         try
         {
-            _cancel ??= new EventWaitHandle(false, EventResetMode.ManualReset, CancelEventName);
+            _cancel ??= new EventWaitHandle(false, EventResetMode.ManualReset, CancelEventName(Environment.ProcessId));
             _cancel.Reset();
             if (_process is { HasExited: false }) return;
             _process = Process.Start(new ProcessStartInfo
@@ -70,7 +73,7 @@ public static class Watchdog
     {
         try
         {
-            using var cancel = new EventWaitHandle(false, EventResetMode.ManualReset, CancelEventName);
+            using var cancel = new EventWaitHandle(false, EventResetMode.ManualReset, CancelEventName(parentPid));
             Process parent;
             try { parent = Process.GetProcessById(parentPid); }
             catch { return; } // parent already gone before we started — nothing to guard
@@ -81,7 +84,11 @@ public static class Watchdog
                 if (parent.WaitForExit(500))
                 {
                     // Give a clean-exit signal racing the process teardown a moment.
-                    if (cancel.WaitOne(1500)) return;
+                    if (cancel.WaitOne(1500))
+                    {
+                        Logger.Log("Watchdog: clean exit confirmed — standing down");
+                        return;
+                    }
                     if (!RecordRelaunchAllowed())
                     {
                         Logger.Log("Watchdog: crash loop detected (5 relaunches in 10 min) — giving up");
@@ -97,14 +104,20 @@ public static class Watchdog
                         });
                         Logger.Log("Watchdog: app crashed — relaunched");
                     }
-                    catch { /* nothing more a watchdog can do */ }
+                    catch (Exception ex)
+                    {
+                        // Nothing more a watchdog can do — but say so, or a dead show
+                        // machine gives no clue why the app never came back.
+                        Logger.Log("Watchdog: relaunch FAILED: " + ex.Message);
+                    }
                     return;
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // The watchdog must never crash loudly.
+            // The watchdog must never crash loudly — but never silently either.
+            Logger.Log("Watchdog: internal error: " + ex);
         }
     }
 

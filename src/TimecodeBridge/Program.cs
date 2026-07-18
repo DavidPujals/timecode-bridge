@@ -66,8 +66,10 @@ static class Program
         Application.ThreadException += (_, e) =>
         {
             Logger.Log("UI thread exception: " + e.Exception);
-            MessageBox.Show("Unexpected error (engine keeps running):\n" + e.Exception.Message,
-                "Timecode Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            // A modal during shutdown would silently pin a half-closed process open.
+            if (!MainForm.ShuttingDown)
+                MessageBox.Show("Unexpected error (engine keeps running):\n" + e.Exception.Message,
+                    "Timecode Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         };
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             Logger.Log("Fatal exception: " + e.ExceptionObject);

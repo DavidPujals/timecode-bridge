@@ -9,7 +9,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>TimecodeBridge</AssemblyName>
     <RootNamespace>TimecodeBridge</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Product>Timecode Bridge</Product>
     <Description>SMPTE LTC (audio) to Art-Net timecode bridge</Description>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
