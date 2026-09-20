@@ -1,27 +1,39 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text;
 
 namespace TimecodeBridge.ArtNet;
 
+/// <summary>An Art-Net device that answered an ArtPoll.</summary>
+public sealed record DiscoveredNode(IPAddress Address, string ShortName, string LongName, DateTime LastSeen, bool IsSelf);
+
 /// <summary>
-/// Minimal Art-Net node discovery responder: listens on the Art-Net port and answers
-/// ArtPoll (0x2000) with ArtPollReply (0x2100), so consoles and network scanners can
-/// see the bridge by name. Binds with SO_REUSEADDR to coexist with other Art-Net
-/// software on the same machine.
+/// Minimal Art-Net node: listens on the Art-Net port, answers ArtPoll (0x2000) with
+/// ArtPollReply (0x2100) so consoles and scanners see the bridge by name, and records
+/// every ArtPollReply it hears so the troubleshooter can prove a console is on the
+/// wire. Binds with SO_REUSEADDR to coexist with other Art-Net software.
 /// </summary>
 public sealed class ArtNetNode : IDisposable
 {
     const int OpPoll = 0x2000;
+    const int OpPollReply = 0x2100;
 
     readonly Socket _socket;
     readonly byte[] _reply;
     readonly Thread _thread;
+    readonly HashSet<string> _localIps; // every IPv4 this PC owns — our own reply can arrive via any of them
+    readonly int _port;
+    readonly ConcurrentDictionary<string, DiscoveredNode> _nodes = new();
     volatile bool _run = true;
 
     public ArtNetNode(IPAddress? localAddress, IPAddress target, int port = ArtNetTimecodeSender.ArtNetPort)
     {
+        _port = port;
         var ownIp = ResolveLocalIp(localAddress, target);
+        _localIps = LocalIpv4Addresses();
+        _localIps.Add(ownIp.ToString());
         _reply = BuildReply(ownIp, GetMacFor(ownIp));
 
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
@@ -60,6 +72,20 @@ public sealed class ArtNetNode : IDisposable
         }
         catch { /* fall through */ }
         return IPAddress.Any;
+    }
+
+    static HashSet<string> LocalIpv4Addresses()
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal) { IPAddress.Loopback.ToString() };
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+                foreach (var ua in nic.GetIPProperties().UnicastAddresses)
+                    if (ua.Address.AddressFamily == AddressFamily.InterNetwork)
+                        set.Add(ua.Address.ToString());
+        }
+        catch { /* informational only */ }
+        return set;
     }
 
     static byte[] GetMacFor(IPAddress ip)
@@ -115,6 +141,39 @@ public sealed class ArtNetNode : IDisposable
         // remainder stays zero (spec requires NUL termination/padding)
     }
 
+    static string ReadAscii(byte[] buf, int offset, int length)
+    {
+        int end = offset;
+        while (end < offset + length && buf[end] != 0) end++;
+        return Encoding.ASCII.GetString(buf, offset, end - offset).Trim();
+    }
+
+    /// <summary>ArtPoll packet (14 bytes). Public for tests.</summary>
+    public static byte[] BuildPoll()
+    {
+        var p = new byte[14];
+        WriteAscii(p, 0, 8, "Art-Net");
+        p[8] = 0x00; p[9] = 0x20; // OpPoll, little-endian
+        p[10] = 0; p[11] = 14;    // protocol version
+        p[12] = 0x00;             // flags: reply only to this poll
+        p[13] = 0x00;             // diagnostic priority
+        return p;
+    }
+
+    /// <summary>Ask every Art-Net device at <paramref name="destination"/> (unicast or
+    /// broadcast) to identify itself. Replies land in <see cref="Snapshot"/>.</summary>
+    public void SendPoll(IPAddress destination)
+    {
+        try { _socket.SendTo(BuildPoll(), new IPEndPoint(destination, _port)); }
+        catch (SocketException) { /* unreachable network — the troubleshooter reports no replies */ }
+        catch (ObjectDisposedException) { }
+    }
+
+    public void ClearDiscovered() => _nodes.Clear();
+
+    public IReadOnlyList<DiscoveredNode> Snapshot() =>
+        _nodes.Values.OrderBy(n => n.Address.ToString(), StringComparer.Ordinal).ToList();
+
     void ReceiveLoop()
     {
         var buf = new byte[1500];
@@ -130,7 +189,19 @@ public sealed class ArtNetNode : IDisposable
                     continue;
                 int opCode = buf[8] | buf[9] << 8;
                 if (opCode == OpPoll)
+                {
                     _socket.SendTo(_reply, remote);
+                }
+                else if (opCode == OpPollReply && n >= 108)
+                {
+                    // Prefer the IP the node claims (some reply via a different
+                    // interface); fall back to the datagram source.
+                    var claimed = new IPAddress(new[] { buf[10], buf[11], buf[12], buf[13] });
+                    var ip = claimed.Equals(IPAddress.Any) && remote is IPEndPoint rep ? rep.Address : claimed;
+                    var node = new DiscoveredNode(ip, ReadAscii(buf, 26, 18), ReadAscii(buf, 44, 64),
+                        DateTime.UtcNow, _localIps.Contains(ip.ToString()));
+                    _nodes[ip.ToString()] = node;
+                }
             }
             catch (SocketException)
             {

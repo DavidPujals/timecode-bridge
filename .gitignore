@@ -13,3 +13,6 @@ Timecode Expert.exe
 # IDE
 .vs/
 *.user
+
+# Stray screenshots in the repo root
+/*.png

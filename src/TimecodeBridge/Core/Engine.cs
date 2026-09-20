@@ -40,6 +40,15 @@ public sealed class EngineConfig
     public int FreewheelFrames { get; init; } = 25;
 }
 
+/// <summary>Point-in-time health readout for the troubleshooter. Approximate by design —
+/// fields are read without locks from the worker's published state.</summary>
+public sealed record EngineDiagnostics(
+    bool InputOpen, string InputDescription, int SampleRate,
+    long SamplesReceived, long Overruns,
+    bool SignalPresent, bool Locked, double MeasuredFps, TimecodeRate DetectedRate,
+    long PacketsSent, long SendErrors, string Status, int Flags,
+    bool BackupConfigured, bool BackupOpen, bool DiscoveryActive);
+
 /// <summary>
 /// Real-time core: pulls samples from the ring buffer on a dedicated highest-priority
 /// thread, decodes LTC, and sends one ArtTimeCode packet per frame. Handles freewheel
@@ -105,6 +114,50 @@ public sealed class Engine : IDisposable
     public string Status => _status;
     public double MeasuredFps => _decoder?.MeasuredFps ?? 0;
     public float ConsumePeak() => _decoder?.ConsumePeak() ?? 0f;
+    public EngineConfig Config => _cfg;
+
+    /// <summary>Health readout for the troubleshooter (safe from any thread).</summary>
+    public EngineDiagnostics Snapshot()
+    {
+        var input = _input;
+        var decoder = _decoder;
+        UnpackState(StateBits, out _, out _, out int flags);
+        return new EngineDiagnostics(
+            InputOpen: input != null,
+            InputDescription: input?.Description ?? "",
+            SampleRate: input?.SampleRate ?? 0,
+            SamplesReceived: _ring.TotalWritten,
+            Overruns: _ring.Overruns,
+            SignalPresent: decoder?.SignalPresent ?? false,
+            Locked: decoder?.Locked ?? false,
+            MeasuredFps: decoder?.MeasuredFps ?? 0,
+            DetectedRate: decoder?.DetectedRate ?? TimecodeRate.Ebu25,
+            PacketsSent: PacketsSent,
+            SendErrors: Interlocked.Read(ref _sendErrors),
+            Status: _status,
+            Flags: flags,
+            BackupConfigured: _cfg.TargetAddress2 != null,
+            BackupOpen: _sender2 != null,
+            DiscoveryActive: _node != null);
+    }
+
+    /// <summary>Art-Net devices that have answered a poll since the last <see cref="PollArtNet"/>.</summary>
+    public IReadOnlyList<DiscoveredNode> DiscoveredNodes => _node?.Snapshot() ?? Array.Empty<DiscoveredNode>();
+
+    /// <summary>Forget earlier replies and ask the target (and the whole broadcast
+    /// domain) to identify. Returns false if the discovery socket isn't available.</summary>
+    public bool PollArtNet()
+    {
+        var node = _node;
+        if (node == null) return false;
+        node.ClearDiscovered();
+        node.SendPoll(_cfg.TargetAddress);
+        if (!_cfg.TargetAddress.Equals(IPAddress.Broadcast))
+            node.SendPoll(IPAddress.Broadcast);
+        if (_cfg.TargetAddress2 != null)
+            node.SendPoll(_cfg.TargetAddress2);
+        return true;
+    }
 
     public static void UnpackState(long bits, out LtcFrame frame, out TimecodeRate rate, out int flags)
     {

@@ -23,6 +23,9 @@ public sealed class FloatRingBuffer
 
     public long Overruns => Interlocked.Read(ref _overruns);
 
+    /// <summary>Total samples ever written — a rising value proves the driver is delivering audio.</summary>
+    public long TotalWritten => Volatile.Read(ref _write);
+
     /// <summary>Consumer-side: discard everything currently buffered.</summary>
     public void Clear() => Volatile.Write(ref _read, Volatile.Read(ref _write));
 

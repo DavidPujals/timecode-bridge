@@ -11,14 +11,32 @@ required on the target machine).
 
 1. Run `dist\TimecodeBridge.exe` — the bridge is **always on**: it starts listening
    immediately and translates the moment timecode appears. There is no start button.
-2. **Audio input** — pick the driver (ASIO for lowest latency), the device, and the
-   channel carrying LTC.
+2. Press **Settings**. **Audio input** — pick the driver (ASIO for lowest latency), the
+   device, and the channel carrying LTC.
 3. **Art-Net output** — pick the network interface facing your lighting network, and
    the target IP: `255.255.255.255` broadcasts to everything; use the console's IP
    for unicast (recommended on busy networks).
 
 Any setting change is applied automatically about half a second after you make it.
 Settings persist in `config.json` next to the exe.
+
+## Home page
+
+The front page shows the live timecode and a one-line verdict — *Running normally*,
+*Ready — waiting for timecode*, *Freewheeling*, *Generator running*, *Signal lost*,
+*Audio device problem* — plus three buttons:
+
+- **Refresh** — re-scans audio devices and network interfaces (keeping your selection)
+  and reconnects the whole chain. Use it after plugging something back in.
+- **Check for Issues** — runs the built-in troubleshooter, which walks every link from
+  the Dante/audio input to the console and reports a pass / warning / fail per step
+  with the most likely fix: audio device open · samples flowing · signal level · LTC
+  detected · frame lock · timecode output · Art-Net socket · network interface ·
+  console on the same subnet · console answers ping · **console answers ArtPoll**
+  (grandMA3 replies when its Art-Net node is enabled, so this proves the desk is
+  there and listening) · backup output. Takes about five seconds; it only sends an
+  ArtPoll and a ping.
+- **Settings** — everything below.
 
 **Updating:** click **check for updates** at the bottom right of the window — the
 bridge downloads the newest release from GitHub, swaps the exe in place, and offers
@@ -91,7 +109,7 @@ the true frame boundary — well under half a frame even via WDM.
 ## Building from source
 
 ```powershell
-dotnet test TimecodeBridge.sln -c Release        # 52 tests: decoder, DF math, Art-Net, engine, soak/fuzz, features
+dotnet test TimecodeBridge.sln -c Release        # 58 tests: decoder, DF math, Art-Net, engine, soak/fuzz, features, troubleshooter
 dotnet publish src\TimecodeBridge\TimecodeBridge.csproj -c Release -r win-x64 `
   --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist
 ```

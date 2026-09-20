@@ -15,6 +15,10 @@ namespace TimecodeBridge;
 /// Always-on main window: the engine starts on launch and restarts itself half a
 /// second after any setting changes — there is no start/stop button. Closing the
 /// window hides it to the tray; the tray menu quits the app.
+///
+/// Layout: a shared header (timecode, rate, status dots, level) above one of three
+/// pages — Home (verdict + Refresh / Check for Issues / Settings), Settings, and
+/// Diagnostics (the chain troubleshooter's results).
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -33,7 +37,9 @@ public sealed class MainForm : Form
 
     const int Margin_ = 36;
     const int ContentW = 488;
+    const int PageTop = 168; // header height; every page is positioned here
 
+    // Header
     readonly Label _lblTc = new();
     readonly Label _lblRateInfo = new();
     readonly Label _lblSignal = new();
@@ -41,6 +47,22 @@ public sealed class MainForm : Form
     readonly Label _lblTx = new();
     readonly Label _lblPackets = new();
     readonly Panel _levelBar = new();
+
+    // Pages
+    readonly Panel _pageHome = new();
+    readonly Panel _pageSettings = new();
+    readonly Panel _pageDiag = new();
+    Control _host; // where the layout helpers add controls while building a page
+
+    // Home
+    readonly Label _lblHomeDot = new();
+    readonly Label _lblHomeTitle = new();
+    readonly Label _lblHomeSub = new();
+    readonly Button _btnHomeRefresh = new();
+    readonly Button _btnCheck = new();
+    readonly Button _btnSettings = new();
+
+    // Settings
     readonly DarkCombo _cmbDriver = new();
     readonly DarkCombo _cmbDevice = new();
     readonly DarkStepper _numChannel = new();
@@ -61,8 +83,17 @@ public sealed class MainForm : Form
     readonly DarkCheck _chkStartup = new();
     readonly DarkCheck _chkWatchdog = new();
     readonly Button _btnLock = new();
+    readonly Button _btnSettingsBack = new();
     readonly Label _lblStatus = new();
     readonly Label _lnkUpdate = new();
+
+    // Diagnostics
+    readonly Label _lblDiagSummary = new();
+    readonly Panel _diagList = new();
+    readonly Button _btnDiagRun = new();
+    readonly Button _btnDiagBack = new();
+    bool _diagRunning;
+
     readonly System.Windows.Forms.Timer _uiTimer = new();
     readonly System.Windows.Forms.Timer _restartTimer = new();
     readonly ToolTip _tips = new();
@@ -79,6 +110,9 @@ public sealed class MainForm : Form
     AppConfig _config = AppConfig.Load();
     Engine? _engine;
     float _levelShown;
+    float _peakWindowMax;   // peak within the current 2 s window
+    float _recentPeak;      // peak of the previous window — what the troubleshooter reads
+    long _peakWindowStart;
     bool _quitting;
     bool _balloonShown;
     int _trayState = -1;
@@ -94,8 +128,9 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
+        _host = this;
         Text = "Timecode Bridge";
-        ClientSize = new Size(560, 576);
+        ClientSize = new Size(560, PageTop + 122);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         BackColor = BackDark;
@@ -116,10 +151,12 @@ public sealed class MainForm : Form
         LoadDeviceList();
         ApplyConfigToUi();
         HookSettingChanges();
+        ShowPage(_pageHome);
 
         _restartTimer.Interval = 500;
         _restartTimer.Tick += (_, _) => { _restartTimer.Stop(); RestartEngine(); };
 
+        _peakWindowStart = Stopwatch.GetTimestamp();
         _uiTimer.Interval = 33;
         _uiTimer.Tick += (_, _) => RefreshStatus();
         _uiTimer.Start();
@@ -325,6 +362,17 @@ public sealed class MainForm : Form
 
     void BuildLayout()
     {
+        BuildHeader();
+        BuildHomePage();
+        BuildSettingsPage();
+        BuildDiagPage();
+        Controls.AddRange(new Control[] { _pageHome, _pageSettings, _pageDiag });
+    }
+
+    void BuildHeader()
+    {
+        _host = this;
+
         _lblTc.SetBounds(0, 22, 560, 68);
         _lblTc.TextAlign = ContentAlignment.MiddleCenter;
         _lblTc.Font = new Font("Consolas", 46f, FontStyle.Bold);
@@ -351,8 +399,82 @@ public sealed class MainForm : Form
         _levelBar.BackColor = BackField;
         _levelBar.Paint += PaintLevel;
 
+        Controls.AddRange(new Control[]
+        {
+            _lblTc, _lblRateInfo, _lblSignal, _lblLock, _lblTx, _lblPackets, _levelBar,
+        });
+    }
+
+    Panel PreparePage(Panel page, int height)
+    {
+        page.SetBounds(0, PageTop, 560, height);
+        page.BackColor = BackDark;
+        page.Visible = false;
+        _host = page;
+        return page;
+    }
+
+    void ShowPage(Panel page)
+    {
+        foreach (var p in new[] { _pageHome, _pageSettings, _pageDiag })
+            p.Visible = ReferenceEquals(p, page);
+        ClientSize = new Size(560, PageTop + page.Height);
+    }
+
+    // HOME -----------------------------------------------------------------
+
+    void BuildHomePage()
+    {
+        PreparePage(_pageHome, 122);
+
+        _lblHomeDot.SetBounds(Margin_ - 2, 12, 22, 26);
+        _lblHomeDot.Text = "●";
+        _lblHomeDot.Font = new Font("Segoe UI", 14f);
+        _lblHomeDot.ForeColor = ForeFaint;
+        _lblHomeDot.TextAlign = ContentAlignment.MiddleLeft;
+
+        _lblHomeTitle.SetBounds(Margin_ + 24, 12, ContentW - 24, 26);
+        _lblHomeTitle.Font = new Font("Segoe UI Semibold", 12f);
+        _lblHomeTitle.ForeColor = ForeText;
+        _lblHomeTitle.TextAlign = ContentAlignment.MiddleLeft;
+        _lblHomeTitle.Text = "Starting…";
+
+        _lblHomeSub.SetBounds(Margin_ + 24, 40, ContentW - 24, 32);
+        _lblHomeSub.Font = new Font("Segoe UI", 8.75f);
+        _lblHomeSub.ForeColor = ForeDim;
+        _lblHomeSub.TextAlign = ContentAlignment.TopLeft;
+        _lblHomeSub.Text = "";
+
+        int by = 82;
+        _btnHomeRefresh.SetBounds(Margin_, by, 110, 30);
+        StyleButton(_btnHomeRefresh, "Refresh");
+        _btnHomeRefresh.Click += (_, _) => RefreshAndReconnect();
+
+        _btnCheck.SetBounds(Margin_ + 122, by, 160, 30);
+        StyleButton(_btnCheck, "Check for Issues");
+        _btnCheck.Click += (_, _) => RunDiagnostics();
+
+        _btnSettings.SetBounds(Margin_ + ContentW - 100, by, 100, 30);
+        StyleButton(_btnSettings, "Settings");
+        _btnSettings.Click += (_, _) => ShowPage(_pageSettings);
+
+        _pageHome.Controls.AddRange(new Control[]
+        {
+            _lblHomeDot, _lblHomeTitle, _lblHomeSub, _btnHomeRefresh, _btnCheck, _btnSettings,
+        });
+
+        SetTip(_btnHomeRefresh, "Re-scan audio devices and network interfaces, then reconnect everything.");
+        SetTip(_btnCheck, "Run the troubleshooter: checks every link from the Dante/audio input through to the console.");
+    }
+
+    // SETTINGS -------------------------------------------------------------
+
+    void BuildSettingsPage()
+    {
+        PreparePage(_pageSettings, 404);
+
         // INPUT ----------------------------------------------------------
-        int sy = 186;
+        int sy = 16;
         AddSection("INPUT", sy);
         int r1 = sy + 30, r2 = sy + 64;
         AddFieldLabel("Driver", Margin_, r1);
@@ -365,10 +487,11 @@ public sealed class MainForm : Form
         StyleNumeric(_numChannel, 100, r2 - 4, 60, 1, 64, 1);
         _btnRefresh.SetBounds(444, r2 - 5, 80, 26);
         StyleButton(_btnRefresh, "Refresh");
-        _btnRefresh.Click += (_, _) => LoadDeviceList();
+        _btnRefresh.Click += (_, _) => { LoadDeviceList(); LoadNicList(); };
+        _host.Controls.Add(_btnRefresh);
 
         // OUTPUT ---------------------------------------------------------
-        sy = 288;
+        sy = 118;
         AddSection("OUTPUT", sy);
         r1 = sy + 30;
         r2 = sy + 64;
@@ -378,7 +501,7 @@ public sealed class MainForm : Form
         StyleCombo(_cmbNic, 100, r1 - 4, 424);
         AddFieldLabel("Target IP", Margin_, r2);
         _txtTargetIpField.SetBounds(100, r2 - 4, 140, 24);
-        Controls.Add(_txtTargetIpField);
+        _host.Controls.Add(_txtTargetIpField);
         AddFieldLabel("Port", 260, r2);
         StyleNumeric(_numPort, 294, r2 - 4, 66, 1, 65535, 6454);
         AddFieldLabel("Rate", 380, r2);
@@ -388,7 +511,7 @@ public sealed class MainForm : Form
         StyleCombo(_cmbNic2, 100, r3 - 4, 240);
         AddFieldLabel("IP", 356, r3);
         _txtTargetIp2Field.SetBounds(384, r3 - 4, 140, 24);
-        Controls.Add(_txtTargetIp2Field);
+        _host.Controls.Add(_txtTargetIp2Field);
         AddFieldLabel("Offset", Margin_, r4);
         StyleNumeric(_numOffset, 100, r4 - 4, 56, -10, 10, 1);
         AddFieldLabel("Freewheel", 190, r4);
@@ -396,7 +519,7 @@ public sealed class MainForm : Form
         AddFieldLabel("frames", 328, r4);
 
         // SAFETY ---------------------------------------------------------
-        sy = 456;
+        sy = 286;
         AddSection("SHOW SAFETY", sy);
         int s1 = sy + 28, s2 = sy + 56;
         StyleCheck(_chkAlert, "Signal-loss alert", Margin_, s1, 130);
@@ -407,15 +530,24 @@ public sealed class MainForm : Form
         _btnLock.SetBounds(404, s2 - 3, 120, 26);
         StyleButton(_btnLock, "LOCK SETTINGS");
         _btnLock.Click += (_, _) => SetLocked(!_config.Locked);
-        Controls.Add(_btnLock);
+        _host.Controls.Add(_btnLock);
 
-        _lblStatus.SetBounds(Margin_, 548, 300, 18);
+        // Bottom row: back · status · version/update ---------------------
+        int by = 374;
+        _btnSettingsBack.SetBounds(Margin_, by, 80, 26);
+        StyleButton(_btnSettingsBack, "← Home");
+        _btnSettingsBack.Click += (_, _) => ShowPage(_pageHome);
+        _host.Controls.Add(_btnSettingsBack);
+
+        _lblStatus.SetBounds(Margin_ + 92, by + 4, 196, 18);
         _lblStatus.TextAlign = ContentAlignment.MiddleLeft;
         _lblStatus.ForeColor = ForeFaint;
         _lblStatus.Font = new Font("Segoe UI", 8.5f);
+        _lblStatus.AutoEllipsis = true;
         _lblStatus.Text = "Starting…";
+        _host.Controls.Add(_lblStatus);
 
-        _lnkUpdate.SetBounds(Margin_ + 300, 548, ContentW - 300, 18);
+        _lnkUpdate.SetBounds(Margin_ + 292, by + 4, ContentW - 292, 18);
         _lnkUpdate.TextAlign = ContentAlignment.MiddleRight;
         _lnkUpdate.ForeColor = ForeFaint;
         _lnkUpdate.Font = new Font("Segoe UI", 8.5f);
@@ -424,12 +556,7 @@ public sealed class MainForm : Form
         _lnkUpdate.MouseEnter += (_, _) => { if (_lnkUpdate.ForeColor == ForeFaint) _lnkUpdate.ForeColor = ForeDim; };
         _lnkUpdate.MouseLeave += (_, _) => { if (_lnkUpdate.ForeColor == ForeDim) _lnkUpdate.ForeColor = ForeFaint; };
         _lnkUpdate.Click += Update_Click;
-
-        Controls.AddRange(new Control[]
-        {
-            _lblTc, _lblRateInfo, _lblSignal, _lblLock, _lblTx, _lblPackets,
-            _levelBar, _btnRefresh, _lblStatus, _lnkUpdate,
-        });
+        _host.Controls.Add(_lnkUpdate);
 
         SetTip(_numOffset, "Frames added before sending. +1 compensates for the one-frame LTC read delay.");
         SetTip(_numFreewheel, "Frames to keep generating after the LTC signal disappears.");
@@ -442,7 +569,156 @@ public sealed class MainForm : Form
         SetTip(_chkAlert, "Windows notification when timecode output stops or falls back to the generator.");
         SetTip(_btnLock, "Lock all settings so nothing can be changed mid-show.");
         SetTip(_lnkUpdate, "Download the newest version from GitHub and restart. Disabled while settings are locked.");
+        SetTip(_btnRefresh, "Re-scan audio devices and network interfaces (keeps the current selection where possible).");
     }
+
+    // DIAGNOSTICS ----------------------------------------------------------
+
+    void BuildDiagPage()
+    {
+        PreparePage(_pageDiag, 420);
+
+        _lblDiagSummary.SetBounds(Margin_, 8, ContentW, 24);
+        _lblDiagSummary.Font = new Font("Segoe UI Semibold", 10.5f);
+        _lblDiagSummary.ForeColor = ForeText;
+        _lblDiagSummary.TextAlign = ContentAlignment.MiddleLeft;
+        _lblDiagSummary.Text = "Check for Issues";
+
+        var line = new Panel { BackColor = Hairline };
+        line.SetBounds(Margin_, 38, ContentW, 1);
+
+        _diagList.SetBounds(Margin_, 46, ContentW, 322);
+        _diagList.BackColor = BackDark;
+        _diagList.AutoScroll = true;
+
+        int by = 382;
+        _btnDiagRun.SetBounds(Margin_, by, 110, 28);
+        StyleButton(_btnDiagRun, "Run again");
+        _btnDiagRun.Click += (_, _) => RunDiagnostics();
+
+        _btnDiagBack.SetBounds(Margin_ + ContentW - 100, by, 100, 28);
+        StyleButton(_btnDiagBack, "← Home");
+        _btnDiagBack.Click += (_, _) => ShowPage(_pageHome);
+
+        _pageDiag.Controls.AddRange(new Control[] { _lblDiagSummary, line, _diagList, _btnDiagRun, _btnDiagBack });
+    }
+
+    async void RunDiagnostics()
+    {
+        if (_diagRunning) return;
+        _diagRunning = true;
+        ShowPage(_pageDiag);
+        _diagList.Controls.Clear();
+        _lblDiagSummary.ForeColor = ForeDim;
+        _lblDiagSummary.Text = "Checking the chain — Dante → LTC → Art-Net → console…";
+        _btnDiagRun.Enabled = false;
+        _btnCheck.Enabled = false;
+
+        SaveUiToConfig();
+        var ctx = new TroubleshootContext
+        {
+            Engine = _engine,
+            EngineStatusIfMissing = _lblStatus.Text,
+            Config = _config,
+            RecentPeak = Math.Max(_recentPeak, _peakWindowMax),
+            WatchdogArmed = _chkWatchdog.Checked,
+        };
+
+        int fails = 0, warns = 0;
+        try
+        {
+            await Troubleshooter.RunAsync(ctx, r =>
+            {
+                if (r.Level == CheckLevel.Fail) fails++;
+                else if (r.Level == CheckLevel.Warn) warns++;
+                AddDiagRow(r);
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("Troubleshooter error: " + ex);
+            AddDiagRow(new CheckResult("Troubleshooter", CheckLevel.Fail, "Internal error: " + ex.Message));
+            fails++;
+        }
+
+        if (fails > 0)
+        {
+            _lblDiagSummary.ForeColor = Red;
+            _lblDiagSummary.Text = $"{fails} problem{(fails == 1 ? "" : "s")} found" +
+                                   (warns > 0 ? $", {warns} warning{(warns == 1 ? "" : "s")}" : "") +
+                                   " — start with the first red item";
+        }
+        else if (warns > 0)
+        {
+            _lblDiagSummary.ForeColor = Amber;
+            _lblDiagSummary.Text = $"Working, with {warns} warning{(warns == 1 ? "" : "s")} worth a look";
+        }
+        else
+        {
+            _lblDiagSummary.ForeColor = Green;
+            _lblDiagSummary.Text = "All checks passed — the whole chain is healthy";
+        }
+        Logger.Log($"Troubleshooter run: {fails} fail, {warns} warn");
+
+        // Results were revealed bottom-up while running; the operator reads top-down.
+        _diagList.AutoScrollPosition = new Point(0, 0);
+
+        _btnDiagRun.Enabled = true;
+        _btnCheck.Enabled = true;
+        _diagRunning = false;
+    }
+
+    void AddDiagRow(CheckResult r)
+    {
+        int width = _diagList.ClientSize.Width - 20; // leave room for the scrollbar
+        int y = _diagList.Controls.Count == 0 ? 4
+            : _diagList.Controls[^1].Bottom + 6 + _diagList.VerticalScroll.Value;
+
+        var row = new Panel { BackColor = BackDark, Width = width };
+
+        var dot = new Label
+        {
+            Text = "●",
+            Font = new Font("Segoe UI", 10f),
+            ForeColor = r.Level switch
+            {
+                CheckLevel.Pass => Green,
+                CheckLevel.Warn => Amber,
+                CheckLevel.Fail => Red,
+                _ => ForeFaint,
+            },
+            AutoSize = false,
+            TextAlign = ContentAlignment.TopLeft,
+        };
+        dot.SetBounds(0, 0, 18, 20);
+
+        var title = new Label
+        {
+            Text = r.Title,
+            Font = new Font("Segoe UI Semibold", 9f),
+            ForeColor = r.Level == CheckLevel.Info ? ForeDim : ForeText,
+            AutoSize = true,
+            Location = new Point(20, 1),
+        };
+
+        var detail = new Label
+        {
+            Text = r.Detail,
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = ForeDim,
+            AutoSize = true,
+            MaximumSize = new Size(width - 24, 0),
+            Location = new Point(20, 20),
+        };
+
+        row.Controls.AddRange(new Control[] { dot, title, detail });
+        row.Height = Math.Max(24, detail.Bottom) + 4;
+        row.Location = new Point(0, y - _diagList.VerticalScroll.Value);
+        _diagList.Controls.Add(row);
+        _diagList.ScrollControlIntoView(row);
+    }
+
+    // ----------------------------------------------------------------------
 
     bool _updateInstalled;
     bool _updateBusy;
@@ -502,7 +778,7 @@ public sealed class MainForm : Form
         c.Text = text;
         c.SetBounds(x, y, w, 20);
         c.Font = new Font("Segoe UI", 8.75f);
-        Controls.Add(c);
+        _host.Controls.Add(c);
     }
 
     void SetLocked(bool locked)
@@ -541,24 +817,24 @@ public sealed class MainForm : Form
             AutoSize = true,
         };
         l.SetBounds(Margin_, y, 10, 14);
-        Controls.Add(l);
+        _host.Controls.Add(l);
 
         var line = new Panel { BackColor = Hairline };
         line.SetBounds(Margin_ + 60, y + 7, ContentW - 60, 1);
-        Controls.Add(line);
+        _host.Controls.Add(line);
     }
 
     void AddFieldLabel(string text, int x, int y)
     {
         var l = new Label { Text = text, ForeColor = ForeDim, AutoSize = true };
         l.SetBounds(x, y, 10, 16);
-        Controls.Add(l);
+        _host.Controls.Add(l);
     }
 
     void StyleCombo(DarkCombo c, int x, int y, int w)
     {
         c.SetBounds(x, y, w, 24);
-        Controls.Add(c);
+        _host.Controls.Add(c);
     }
 
     void StyleNumeric(DarkStepper n, int x, int y, int w, int min, int max, int value)
@@ -567,7 +843,7 @@ public sealed class MainForm : Form
         n.Minimum = min;
         n.Maximum = max;
         n.Value = value;
-        Controls.Add(n);
+        _host.Controls.Add(n);
     }
 
     void StyleButton(Button b, string text)
@@ -603,8 +879,12 @@ public sealed class MainForm : Form
 
     // ------------------------------------------------------------- device UI
 
+    /// <summary>Re-enumerates devices for the current driver, keeping the current
+    /// selection when that device still exists (a Refresh must never silently
+    /// switch inputs mid-show).</summary>
     void LoadDeviceList()
     {
+        var previous = _cmbDevice.SelectedItem as AudioDeviceInfo;
         _cmbDevice.Items.Clear();
         var devices = _cmbDriver.SelectedIndex switch
         {
@@ -614,12 +894,16 @@ public sealed class MainForm : Form
         };
         foreach (var d in devices)
             _cmbDevice.Items.Add(d);
-        if (_cmbDevice.Items.Count > 0)
+        if (previous != null)
+            SelectDevice(previous.Id, previous.Name);
+        if (_cmbDevice.SelectedIndex < 0 && _cmbDevice.Items.Count > 0)
             _cmbDevice.SelectedIndex = 0;
     }
 
     void LoadNicList()
     {
+        string prev1 = (_cmbNic.SelectedItem as AudioDeviceInfo)?.Id ?? "";
+        string prev2 = (_cmbNic2.SelectedItem as AudioDeviceInfo)?.Id ?? "";
         _cmbNic.Items.Clear();
         _cmbNic2.Items.Clear();
         _cmbNic.Items.Add(new AudioDeviceInfo("", "Any interface (0.0.0.0)"));
@@ -640,6 +924,21 @@ public sealed class MainForm : Form
         catch { /* enumeration failed — "Any" is always available */ }
         _cmbNic.SelectedIndex = 0;
         _cmbNic2.SelectedIndex = 0;
+        SelectNic(_cmbNic, prev1);
+        SelectNic(_cmbNic2, prev2);
+    }
+
+    /// <summary>Home-page Refresh: rescan devices and interfaces, then reconnect the
+    /// whole chain immediately (no debounce).</summary>
+    void RefreshAndReconnect()
+    {
+        LoadDeviceList();
+        LoadNicList();
+        _restartTimer.Stop(); // the list reloads queued a debounced restart — do it now instead
+        _lblHomeTitle.Text = "Reconnecting…";
+        _lblHomeDot.ForeColor = ForeDim;
+        Logger.Log("Refresh requested from home page");
+        RestartEngine();
     }
 
     void ApplyConfigToUi()
@@ -864,6 +1163,7 @@ public sealed class MainForm : Form
             _lblLock.ForeColor = ForeFaint;
             _lblTx.ForeColor = ForeFaint;
             UpdateTray(0, "Timecode Bridge — " + _lblStatus.Text);
+            SetHomeStatus(Red, "Not running", _lblStatus.Text);
             return;
         }
 
@@ -909,21 +1209,60 @@ public sealed class MainForm : Form
                 _outputDead ? "Timecode Bridge — SIGNAL LOST" : "Timecode Bridge — no LTC signal");
         }
 
-        _lblStatus.Text = engine.Status;
+        string status = engine.Status;
+        _lblStatus.Text = status;
+        UpdateHomeVerdict(status, signal, locked, freewheel, tx, generator);
 
-        // Peak meter with a smooth fall
+        // Peak meter with a smooth fall, plus a 2 s rolling max for the troubleshooter
         float peak = engine.ConsumePeak();
         _levelShown = peak > _levelShown ? peak : Math.Max(0, _levelShown - 0.06f);
         _levelBar.Invalidate();
+        if (peak > _peakWindowMax) _peakWindowMax = peak;
+        long now = Stopwatch.GetTimestamp();
+        if (now - _peakWindowStart > 2 * Stopwatch.Frequency)
+        {
+            _recentPeak = _peakWindowMax;
+            _peakWindowMax = 0;
+            _peakWindowStart = now;
+        }
 
         if (!engine.IsRunning)
         {
             // Fatal engine error (e.g. Art-Net socket failure) — tear down and show
             // why. A settings change (or app restart) brings it back.
-            string status = engine.Status;
             _engine = null;
             Task.Run(engine.Dispose);
             _lblStatus.Text = status;
         }
+    }
+
+    /// <summary>The home page's one-line answer to "is everything working?".</summary>
+    void UpdateHomeVerdict(string status, bool signal, bool locked, bool freewheel, bool tx, bool generator)
+    {
+        string target = _txtTargetIp.Text.Trim();
+        if (status.StartsWith("Input error", StringComparison.Ordinal) ||
+            status.StartsWith("Recovering", StringComparison.Ordinal))
+            SetHomeStatus(Red, "Audio device problem", status);
+        else if (status.StartsWith("Art-Net", StringComparison.Ordinal))
+            SetHomeStatus(Red, "Network problem", status);
+        else if (_outputDead)
+            SetHomeStatus(Red, "Signal lost — output stopped", "LTC disappeared and freewheel has run out. Nothing is being sent to " + target + ".");
+        else if (generator)
+            SetHomeStatus(Amber, "Generator running — LTC lost", "Sending PC-clock timecode to " + target + " until LTC returns.");
+        else if (freewheel)
+            SetHomeStatus(Amber, "Freewheeling — LTC dropped", "Coasting on the last known rate; output snaps back when LTC returns.");
+        else if (tx && locked)
+            SetHomeStatus(Green, "Running normally", $"LTC locked · sending Art-Net timecode to {target}");
+        else if (signal)
+            SetHomeStatus(Amber, "Locking to timecode…", status);
+        else
+            SetHomeStatus(ForeDim, "Ready — waiting for timecode", status);
+    }
+
+    void SetHomeStatus(Color color, string title, string sub)
+    {
+        if (_lblHomeDot.ForeColor != color) _lblHomeDot.ForeColor = color;
+        if (_lblHomeTitle.Text != title) _lblHomeTitle.Text = title;
+        if (_lblHomeSub.Text != sub) _lblHomeSub.Text = sub;
     }
 }
