@@ -29,7 +29,7 @@ The front page shows the live timecode and a one-line verdict — *Running norma
 - **Refresh** — re-scans audio devices and network interfaces (keeping your selection)
   and reconnects the whole chain. Use it after plugging something back in.
 - **Check for Issues** — runs the built-in troubleshooter, which walks every link from
-  the Dante/audio input to the console and reports a pass / warning / fail per step
+  the audio input to the console and reports a pass / warning / fail per step
   with the most likely fix: audio device open · samples flowing · signal level · LTC
   detected · frame lock · timecode output · Art-Net socket · network interface ·
   console on the same subnet · console answers ping · **console answers ArtPoll**

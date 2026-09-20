@@ -464,7 +464,7 @@ public sealed class MainForm : Form
         });
 
         SetTip(_btnHomeRefresh, "Re-scan audio devices and network interfaces, then reconnect everything.");
-        SetTip(_btnCheck, "Run the troubleshooter: checks every link from the Dante/audio input through to the console.");
+        SetTip(_btnCheck, "Run the troubleshooter: checks every link from the audio input through to the console.");
     }
 
     // SETTINGS -------------------------------------------------------------
@@ -610,7 +610,7 @@ public sealed class MainForm : Form
         ShowPage(_pageDiag);
         _diagList.Controls.Clear();
         _lblDiagSummary.ForeColor = ForeDim;
-        _lblDiagSummary.Text = "Checking the chain — Dante → LTC → Art-Net → console…";
+        _lblDiagSummary.Text = "Checking the chain — audio input → LTC → Art-Net → console…";
         _btnDiagRun.Enabled = false;
         _btnCheck.Enabled = false;
 

@@ -22,9 +22,9 @@ public sealed class TroubleshootContext
 }
 
 /// <summary>
-/// Walks the signal chain end to end — Dante/DVS → audio device → LTC decode → Art-Net
-/// → network → console — and reports one verdict per link, with the fix for the most
-/// likely cause of each failure. Read-only apart from an ArtPoll and a ping.
+/// Walks the signal chain end to end — audio device → LTC decode → Art-Net → network →
+/// console — and reports one verdict per link, with the fix for the most likely cause
+/// of each failure. Read-only apart from an ArtPoll and a ping.
 /// </summary>
 public static class Troubleshooter
 {
@@ -51,10 +51,8 @@ public static class Troubleshooter
         var s1 = engine.Snapshot();
         if (!s1.InputOpen)
         {
-            string hint = s1.Status.Contains("Dante", StringComparison.OrdinalIgnoreCase)
-                ? "Start Dante Virtual Soundcard (open DVS and press Start), then this will reconnect by itself."
-                : "Check the interface is connected and powered, then press Refresh.";
-            report(new("Audio device", CheckLevel.Fail, $"{s1.Status}. {hint}"));
+            report(new("Audio device", CheckLevel.Fail,
+                $"{s1.Status}. Once the device is available again this reconnects by itself (retrying every 2 s)."));
             report(new("Audio stream", CheckLevel.Fail, "No device — nothing to measure."));
             ReportOutputChecks(engine, s1, report);
             await ReportNetworkChecksAsync(engine, cfg, report, ct);
@@ -69,12 +67,12 @@ public static class Troubleshooter
         long expected = (long)(s2.SampleRate * 0.6);
         if (got <= 0)
             report(new("Audio stream", CheckLevel.Fail,
-                "Device is open but delivering no audio. In Dante: is DVS started and are its receive channels " +
-                "subscribed in Dante Controller? In Windows: is the device enabled and not in exclusive use?"));
+                "Device is open but delivering no audio — the device may be stopped, disabled in Windows, or held " +
+                "exclusively by another program."));
         else if (expected > 0 && got < expected / 4)
             report(new("Audio stream", CheckLevel.Warn,
                 $"Audio arriving intermittently — {got:N0} samples in 0.6 s, expected ~{expected:N0}. Dropouts likely; " +
-                "check CPU load, USB/Dante network health, or try the WASAPI driver."));
+                "check CPU load and the device connection, or try the WASAPI driver."));
         else
             report(new("Audio stream", CheckLevel.Pass,
                 $"{s2.SampleRate / 1000.0:0.#} kHz, {got:N0} samples in 0.6 s" +
@@ -88,9 +86,8 @@ public static class Troubleshooter
             report(new("Signal level", CheckLevel.Info, "Not measurable — no audio stream."));
         else if (silent)
             report(new("Signal level", CheckLevel.Fail,
-                $"Silence on channel {cfg.Channel}. Either nothing is playing timecode right now (Playback stopped?) " +
-                "or the Dante route is missing — in Dante Controller, subscribe the LTC transmitter to this DVS receive channel, " +
-                "and check the Channel setting matches (1 = left, 2 = right of the pair)."));
+                $"Silence on channel {cfg.Channel} — nothing is arriving on this input right now. Check the timecode " +
+                "source is running and routed to this device, and that Channel matches (1 = left, 2 = right)."));
         else if (peak < 0.02f)
             report(new("Signal level", CheckLevel.Warn,
                 $"Very low level ({db:0} dBFS). The decoder copes down to about −60 dBFS, but this leaves little margin — raise the LTC send level."));
@@ -107,8 +104,8 @@ public static class Troubleshooter
             report(new("LTC detected", CheckLevel.Fail, "No LTC — there is no audio to decode (see above)."));
         else
             report(new("LTC detected", CheckLevel.Fail,
-                "Audio is present but it is not LTC. The channel probably carries music, click or a guide track — " +
-                "select the channel Playback sends timecode on (check its Outputs routing), or the wrong DVS receive pair is patched."));
+                "Audio is present but it is not LTC — this channel probably carries music, click or a guide track. " +
+                "Select the channel the timecode is actually sent on."));
 
         // 6. Lock / rate ------------------------------------------------------
         if (s2.Locked)
@@ -125,7 +122,7 @@ public static class Troubleshooter
         else if (s2.SignalPresent)
             report(new("Frame lock", CheckLevel.Warn,
                 "LTC seen but not locked. Lock needs three clean consecutive frames — a varispeed, scrubbing or very " +
-                "distorted source prevents it. Check the level above and that Playback is running at a steady rate."));
+                "distorted source prevents it. Check the level above and that the timecode source is running at a steady rate."));
         else
             report(new("Frame lock", CheckLevel.Fail, "Not locked (no LTC)."));
 

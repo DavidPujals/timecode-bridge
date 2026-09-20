@@ -140,7 +140,7 @@ public class TroubleshooterTests
     }
 
     [Fact]
-    public void Silent_input_is_diagnosed_as_missing_dante_route_not_a_dead_device()
+    public void Silent_input_is_diagnosed_as_missing_signal_not_a_dead_device()
     {
         using var listener = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
         int port = ((IPEndPoint)listener.Client.LocalEndPoint!).Port;
@@ -165,7 +165,8 @@ public class TroubleshooterTests
         Assert.Equal(CheckLevel.Pass, results.Single(r => r.Title == "Audio stream").Level); // samples ARE flowing
         var level = results.Single(r => r.Title == "Signal level");
         Assert.Equal(CheckLevel.Fail, level.Level);
-        Assert.Contains("Dante", level.Detail);
+        Assert.Contains("Silence", level.Detail);
+        Assert.DoesNotContain("Dante", level.Detail); // vendor-specific advice was removed on request
         Assert.Equal(CheckLevel.Fail, results.Single(r => r.Title == "LTC detected").Level);
         Assert.Equal(CheckLevel.Fail, results.Single(r => r.Title == "Timecode output").Level);
         // Discovery disabled → the troubleshooter must say so rather than crash or lie.
